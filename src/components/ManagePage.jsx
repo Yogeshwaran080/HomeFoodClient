@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Pencil, X } from 'lucide-react';
+import { Pencil, X, Fingerprint, Trash2 } from 'lucide-react';
+import { startRegistration, startAuthentication } from '@simplewebauthn/browser';
 import BillModal from './BillModal';
 import { logClientEvent } from '../utils/logger';
 
@@ -8,6 +9,12 @@ export default function ManagePage({ currentPath, onNavigate }) {
   const [ipAllowed, setIpAllowed] = useState(false);
   const [clientIp, setClientIp] = useState('');
   const [accessError, setAccessError] = useState('');
+  const [deviceToken, setDeviceToken] = useState(() => localStorage.getItem('slhf_device_token') || '');
+  const [hasRegisteredDevices, setHasRegisteredDevices] = useState(false);
+  const [devices, setDevices] = useState([]);
+  const [deviceNameInput, setDeviceNameInput] = useState('');
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
+  const [passkeyError, setPasskeyError] = useState('');
 
   const [secretCode, setSecretCode] = useState('');
   const [isUnlocked, setIsUnlocked] = useState(false);
@@ -88,41 +95,19 @@ export default function ManagePage({ currentPath, onNavigate }) {
     return () => clearTimeout(timer);
   }, [actionNotice]);
 
-  // 1. Check IP access on mount
-  useEffect(() => {
-    const checkAccess = async () => {
-      try {
-        const res = await fetch('/api/manage/access');
-        const contentType = res.headers.get('content-type') || '';
-        if (!contentType.includes('application/json')) {
-          setAccessError('Backend API is not connected to this host yet. Deploy the backend and configure the /api proxy in vercel.json.');
-          setIpAllowed(false);
-          return;
-        }
-        const data = await res.json();
-        setClientIp(data.clientIp || '');
-        setIpAllowed(res.ok && data.allowed === true);
-        if (!res.ok) {
-          setAccessError(data.error || '');
-        }
-      } catch (e) {
-        setAccessError('Unable to reach backend API.');
-        setIpAllowed(false);
-      } finally {
-        setAccessChecked(true);
-      }
-    };
-    checkAccess();
-  }, []);
-
-  const fetchAllData = useCallback(async (codeToUse) => {
+  const fetchAllData = useCallback(async (codeToUse, tokenOverride = null) => {
     setLoadingData(true);
     try {
-      const headers = { 'x-manage-code': codeToUse };
-      const [ordRes, custRes, grbRes] = await Promise.all([
+      const tok = tokenOverride !== null ? tokenOverride : deviceToken;
+      const headers = {
+        ...(codeToUse ? { 'x-manage-code': codeToUse } : {}),
+        ...(tok ? { 'x-device-token': tok } : {})
+      };
+      const [ordRes, custRes, grbRes, devRes] = await Promise.all([
         fetch('/api/manage/orders', { headers }),
         fetch('/api/manage/customers', { headers }),
-        fetch('/api/manage/garbage', { headers })
+        fetch('/api/manage/garbage', { headers }),
+        fetch('/api/manage/devices', { headers })
       ]);
       if (ordRes.ok) {
         const ordData = await ordRes.json();
@@ -136,10 +121,169 @@ export default function ManagePage({ currentPath, onNavigate }) {
         const grbData = await grbRes.json();
         setGarbage(grbData.garbage || []);
       }
+      if (devRes.ok) {
+        const devData = await devRes.json();
+        setDevices(devData.devices || []);
+      }
     } finally {
       setLoadingData(false);
     }
+  }, [deviceToken]);
+
+  // 1. Check IP or registered Passkey access on mount
+  useEffect(() => {
+    const checkAccess = async () => {
+      try {
+        const headers = deviceToken ? { 'x-device-token': deviceToken } : {};
+        const res = await fetch('/api/manage/access', { headers });
+        const contentType = res.headers.get('content-type') || '';
+        if (!contentType.includes('application/json')) {
+          setAccessError('Backend API is not connected to this host yet. Deploy the backend and configure the /api proxy in vercel.json.');
+          setIpAllowed(false);
+          return;
+        }
+        const data = await res.json();
+        setClientIp(data.clientIp || '');
+        setHasRegisteredDevices(Boolean(data.hasRegisteredDevices));
+        const allowed = res.ok && data.allowed === true;
+        setIpAllowed(allowed);
+        if (!res.ok) {
+          setAccessError(data.error || '');
+          if (deviceToken) {
+            localStorage.removeItem('slhf_device_token');
+            setDeviceToken('');
+          }
+        } else if (data.deviceVerified) {
+          setIsUnlocked(true);
+          fetchAllData('', deviceToken);
+        }
+      } catch (e) {
+        setAccessError('Unable to reach backend API.');
+        setIpAllowed(false);
+      } finally {
+        setAccessChecked(true);
+      }
+    };
+    checkAccess();
   }, []);
+
+  const handlePasskeyLogin = async () => {
+    setPasskeyError('');
+    setPasskeyBusy(true);
+    try {
+      const optRes = await fetch('/api/manage/webauthn/login-options', { method: 'POST' });
+      const optData = await optRes.json();
+      if (!optRes.ok) {
+        setPasskeyError(optData.error || 'Unable to start Passkey sign-in.');
+        setPasskeyBusy(false);
+        return;
+      }
+      const assertionResponse = await startAuthentication({ optionsJSON: optData.options });
+      const verRes = await fetch('/api/manage/webauthn/login-verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          assertionResponse,
+          challengeToken: optData.challengeToken
+        })
+      });
+      const verData = await verRes.json();
+      if (!verRes.ok || !verData.verified) {
+        setPasskeyError(verData.error || 'Passkey verification failed.');
+        setPasskeyBusy(false);
+        return;
+      }
+      localStorage.setItem('slhf_device_token', verData.deviceToken);
+      setDeviceToken(verData.deviceToken);
+      setIpAllowed(true);
+      setIsUnlocked(true);
+      setActionNotice(`Signed in via Passkey (${verData.deviceName || 'Trusted Device'}).`);
+      await fetchAllData('', verData.deviceToken);
+    } catch (err) {
+      setPasskeyError(err?.message || 'Passkey sign-in cancelled or failed.');
+    } finally {
+      setPasskeyBusy(false);
+    }
+  };
+
+  const handleRegisterDevice = async (e) => {
+    e.preventDefault();
+    setPasskeyError('');
+    setPasskeyBusy(true);
+    try {
+      const headers = {
+        'Content-Type': 'application/json',
+        ...(secretCode.trim() ? { 'x-manage-code': secretCode.trim() } : {}),
+        ...(deviceToken ? { 'x-device-token': deviceToken } : {})
+      };
+      const optRes = await fetch('/api/manage/webauthn/register-options', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ code: secretCode.trim() })
+      });
+      const optData = await optRes.json();
+      if (!optRes.ok) {
+        setPasskeyError(optData.error || 'Failed to start device registration.');
+        setPasskeyBusy(false);
+        return;
+      }
+      const attestationResponse = await startRegistration({ optionsJSON: optData.options });
+      const verRes = await fetch('/api/manage/webauthn/register-verify', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          code: secretCode.trim(),
+          attestationResponse,
+          challengeToken: optData.challengeToken,
+          deviceName: deviceNameInput.trim() || navigator.platform || 'Trusted Device'
+        })
+      });
+      const verData = await verRes.json();
+      if (!verRes.ok || !verData.verified) {
+        setPasskeyError(verData.error || 'Device registration failed.');
+        setPasskeyBusy(false);
+        return;
+      }
+      if (verData.deviceToken) {
+        localStorage.setItem('slhf_device_token', verData.deviceToken);
+        setDeviceToken(verData.deviceToken);
+      }
+      setDevices(verData.devices || []);
+      setHasRegisteredDevices((verData.devices || []).length > 0);
+      setDeviceNameInput('');
+      setActionNotice(`Device "${verData.device?.deviceName}" registered!`);
+    } catch (err) {
+      setPasskeyError(err?.message || 'Passkey registration cancelled or unsupported on this browser.');
+    } finally {
+      setPasskeyBusy(false);
+    }
+  };
+
+  const handleRevokeDevice = async (deviceId) => {
+    setPasskeyError('');
+    try {
+      const headers = {
+        'Content-Type': 'application/json',
+        ...(secretCode.trim() ? { 'x-manage-code': secretCode.trim() } : {}),
+        ...(deviceToken ? { 'x-device-token': deviceToken } : {})
+      };
+      const res = await fetch(`/api/manage/devices/${deviceId}`, {
+        method: 'DELETE',
+        headers,
+        body: JSON.stringify({ code: secretCode.trim() })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setPasskeyError(data.error || 'Failed to revoke device.');
+        return;
+      }
+      setDevices(data.devices || []);
+      setHasRegisteredDevices((data.devices || []).length > 0);
+      setActionNotice('Device revoked.');
+    } catch (err) {
+      setPasskeyError('Network error revoking device.');
+    }
+  };
 
   const handleUnlock = async (e) => {
     e.preventDefault();
@@ -401,9 +545,11 @@ export default function ManagePage({ currentPath, onNavigate }) {
 
   const handleViewBill = async (cust) => {
     try {
-      const res = await fetch(`/api/manage/customers/${cust.customerId}/bill`, {
-        headers: { 'x-manage-code': secretCode.trim() }
-      });
+      const headers = {
+        ...(secretCode.trim() ? { 'x-manage-code': secretCode.trim() } : {}),
+        ...(deviceToken ? { 'x-device-token': deviceToken } : {})
+      };
+      const res = await fetch(`/api/manage/customers/${cust.customerId}/bill`, { headers });
       const data = await res.json();
       if (res.ok && data.bill) {
         setActiveBill(data.bill);
@@ -426,7 +572,10 @@ export default function ManagePage({ currentPath, onNavigate }) {
       if (modal.type === 'remove-order') {
         const res = await fetch(`/api/manage/orders/${modal.item.orderId}`, {
           method: 'DELETE',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(deviceToken ? { 'x-device-token': deviceToken } : {})
+          },
           body: JSON.stringify({ code: modalPin.trim() })
         });
         const data = await res.json();
@@ -459,7 +608,10 @@ export default function ManagePage({ currentPath, onNavigate }) {
         }
         const res = await fetch(`/api/manage/orders/${modal.item.orderId}/preview-bill`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(deviceToken ? { 'x-device-token': deviceToken } : {})
+          },
           body: JSON.stringify({
             code: secretCode.trim(),
             endDate: modalEndDate.trim(),
@@ -485,7 +637,10 @@ export default function ManagePage({ currentPath, onNavigate }) {
       } else if (modal.type === 'confirm-add-customer' && pendingAddPayload) {
         const res = await fetch(`/api/manage/orders/${pendingAddPayload.orderId}/to-customer`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(deviceToken ? { 'x-device-token': deviceToken } : {})
+          },
           body: JSON.stringify({
             code: secretCode.trim(),
             endDate: pendingAddPayload.endDate,
@@ -512,7 +667,10 @@ export default function ManagePage({ currentPath, onNavigate }) {
       } else if (modal.type === 'add-days') {
         const res = await fetch(`/api/manage/customers/${modal.item.customerId}/add-days`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(deviceToken ? { 'x-device-token': deviceToken } : {})
+          },
           body: JSON.stringify({ days: modalDays })
         });
         const data = await res.json();
@@ -534,7 +692,10 @@ export default function ManagePage({ currentPath, onNavigate }) {
         }
         const res = await fetch(`/api/manage/customers/${modal.item.customerId}/paid`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(deviceToken ? { 'x-device-token': deviceToken } : {})
+          },
           body: JSON.stringify({
             code: modalPin.trim(),
             startDate: todayStr,
@@ -575,7 +736,10 @@ export default function ManagePage({ currentPath, onNavigate }) {
         }
         const res = await fetch('/api/manage/orders/direct', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(deviceToken ? { 'x-device-token': deviceToken } : {})
+          },
           body: JSON.stringify({
             code: secretCode.trim(),
             ...directForm
@@ -625,7 +789,10 @@ export default function ManagePage({ currentPath, onNavigate }) {
         }
         const res = await fetch('/api/manage/customers/preview-bill', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(deviceToken ? { 'x-device-token': deviceToken } : {})
+          },
           body: JSON.stringify({
             code: secretCode.trim(),
             ...directForm,
@@ -648,7 +815,10 @@ export default function ManagePage({ currentPath, onNavigate }) {
       } else if (modal.type === 'confirm-direct-customer' && pendingAddPayload?.isDirectCustomer) {
         const res = await fetch('/api/manage/customers/direct', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(deviceToken ? { 'x-device-token': deviceToken } : {})
+          },
           body: JSON.stringify({
             code: secretCode.trim(),
             ...pendingAddPayload.directData
@@ -677,7 +847,10 @@ export default function ManagePage({ currentPath, onNavigate }) {
         }
         const res = await fetch(`/api/manage/customers/${modal.item.customerId}`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(deviceToken ? { 'x-device-token': deviceToken } : {})
+          },
           body: JSON.stringify({
             code: modalPin.trim(),
             ...directForm
@@ -700,7 +873,10 @@ export default function ManagePage({ currentPath, onNavigate }) {
         }
         const res = await fetch(`/api/manage/orders/${modal.item.orderId}`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(deviceToken ? { 'x-device-token': deviceToken } : {})
+          },
           body: JSON.stringify({
             code: modalPin.trim(),
             ...directForm
@@ -723,7 +899,10 @@ export default function ManagePage({ currentPath, onNavigate }) {
         }
         const res = await fetch(`/api/manage/garbage/${modal.item.garbageId}`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(deviceToken ? { 'x-device-token': deviceToken } : {})
+          },
           body: JSON.stringify({
             code: modalPin.trim(),
             ...directForm
@@ -741,7 +920,10 @@ export default function ManagePage({ currentPath, onNavigate }) {
       } else if (modal.type === 'delete-customer') {
         const res = await fetch(`/api/manage/customers/${modal.item.customerId}`, {
           method: 'DELETE',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(deviceToken ? { 'x-device-token': deviceToken } : {})
+          },
           body: JSON.stringify({ code: modalPin.trim() })
         });
         const data = await res.json();
@@ -786,9 +968,23 @@ export default function ManagePage({ currentPath, onNavigate }) {
               Detected IP: {clientIp}
             </div>
           )}
+          {hasRegisteredDevices && (
+            <div className="mb-4 space-y-2">
+              <button
+                type="button"
+                disabled={passkeyBusy}
+                onClick={handlePasskeyLogin}
+                className="w-full px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl transition-colors inline-flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                <Fingerprint className="w-4 h-4" />
+                <span>{passkeyBusy ? 'Verifying...' : 'Sign in with Registered Passkey'}</span>
+              </button>
+              {passkeyError && <p className="text-xs text-red-600 font-semibold">{passkeyError}</p>}
+            </div>
+          )}
           <button
             onClick={() => onNavigate('/')}
-            className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl transition-colors"
+            className="px-5 py-2.5 border border-slate-300 hover:bg-slate-50 text-slate-800 text-xs font-bold rounded-xl transition-colors"
           >
             Return to Home
           </button>
@@ -835,6 +1031,21 @@ export default function ManagePage({ currentPath, onNavigate }) {
             >
               Unlock
             </button>
+
+            {hasRegisteredDevices && (
+              <div className="space-y-1.5">
+                <button
+                  type="button"
+                  disabled={passkeyBusy}
+                  onClick={handlePasskeyLogin}
+                  className="w-full py-2.5 border border-slate-300 hover:bg-slate-50 text-slate-900 text-xs font-bold rounded-xl transition-colors inline-flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  <Fingerprint className="w-4 h-4" />
+                  <span>{passkeyBusy ? 'Verifying...' : 'Unlock with Passkey (Fingerprint / PIN)'}</span>
+                </button>
+                {passkeyError && <p className="text-xs text-red-600 font-semibold text-center">{passkeyError}</p>}
+              </div>
+            )}
 
             <button
               type="button"
@@ -964,6 +1175,18 @@ export default function ManagePage({ currentPath, onNavigate }) {
                 }`}
             >
               Garbage ({garbage.length})
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setPasskeyError('');
+                openModal('devices', null);
+              }}
+              className="px-3 py-2 rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-800 text-xs font-bold transition-colors inline-flex items-center gap-1.5"
+            >
+              <Fingerprint className="w-3.5 h-3.5" />
+              <span>Devices ({devices.length})</span>
             </button>
 
             <button
@@ -1514,6 +1737,7 @@ export default function ManagePage({ currentPath, onNavigate }) {
                 <X className="w-4 h-4" strokeWidth={1.5} />
               </button>
               <h3 className="text-lg font-black text-slate-900 font-serif italic mb-1 pr-6">
+                {modal.type === 'devices' && 'Trusted Devices (Passkey)'}
                 {modal.type === 'remove-order' && 'Confirm Remove Order'}
                 {modal.type === 'add-customer' && 'Add To Customers'}
                 {modal.type === 'direct-add-order' && 'Add Order'}
@@ -1532,6 +1756,73 @@ export default function ManagePage({ currentPath, onNavigate }) {
                 </p>
               )}
 
+              {modal.type === 'devices' ? (
+                <div className="space-y-4 mt-3">
+                  <p className="text-xs text-slate-600 leading-relaxed">
+                    Register this phone or laptop with Fingerprint, Face ID, or Device PIN so you can access management from any IP address.
+                  </p>
+
+                  <form onSubmit={handleRegisterDevice} className="space-y-2.5">
+                    <label className="block text-[11px] font-bold text-slate-700 uppercase">
+                      Device Name
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={deviceNameInput}
+                        onChange={(e) => setDeviceNameInput(e.target.value)}
+                        placeholder="e.g. Yogesh Mobile / Office Laptop"
+                        className="flex-1 px-3 py-2 rounded-lg border border-slate-300 text-xs outline-none"
+                      />
+                      <button
+                        type="submit"
+                        disabled={passkeyBusy}
+                        className="px-3.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50"
+                      >
+                        <Fingerprint className="w-3.5 h-3.5" />
+                        <span>{passkeyBusy ? 'Waiting...' : 'Register'}</span>
+                      </button>
+                    </div>
+                  </form>
+
+                  {passkeyError && (
+                    <p className="text-xs text-red-600 font-semibold">{passkeyError}</p>
+                  )}
+
+                  <div className="border-t border-slate-200 pt-3">
+                    <div className="text-[11px] font-bold text-slate-700 uppercase mb-2">
+                      Registered Devices ({devices.length})
+                    </div>
+                    {devices.length === 0 ? (
+                      <p className="text-xs text-slate-500">No devices registered yet.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {devices.map((dev) => (
+                          <div
+                            key={dev.deviceId}
+                            className="flex items-center justify-between gap-2 p-2.5 rounded-xl border border-slate-200 bg-slate-50"
+                          >
+                            <div>
+                              <div className="text-xs font-bold text-slate-900">{dev.deviceName}</div>
+                              <div className="text-[11px] text-slate-500">
+                                {dev.deviceId} &bull; {dev.registeredAt ? new Date(dev.registeredAt).toLocaleDateString() : ''}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleRevokeDevice(dev.deviceId)}
+                              className="px-2.5 py-1.5 rounded-lg border border-red-300 text-red-700 hover:bg-red-50 text-[11px] font-bold inline-flex items-center gap-1"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              <span>Revoke</span>
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
               <form onSubmit={handleModalSubmit} className="space-y-4">
                 {(modal.type === 'direct-add-customer' ||
                   modal.type === 'direct-add-order' ||
@@ -2121,6 +2412,7 @@ export default function ManagePage({ currentPath, onNavigate }) {
                   </button>
                 </div>
               </form>
+              )}
             </div>
           </div>
         )
