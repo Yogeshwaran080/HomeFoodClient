@@ -7,6 +7,7 @@ export default function ManagePage({ currentPath, onNavigate }) {
   const [accessChecked, setAccessChecked] = useState(false);
   const [ipAllowed, setIpAllowed] = useState(false);
   const [clientIp, setClientIp] = useState('');
+  const [accessError, setAccessError] = useState('');
 
   const [secretCode, setSecretCode] = useState('');
   const [isUnlocked, setIsUnlocked] = useState(false);
@@ -92,10 +93,20 @@ export default function ManagePage({ currentPath, onNavigate }) {
     const checkAccess = async () => {
       try {
         const res = await fetch('/api/manage/access');
+        const contentType = res.headers.get('content-type') || '';
+        if (!contentType.includes('application/json')) {
+          setAccessError('Backend API is not connected to this host yet. Deploy the backend and configure the /api proxy in vercel.json.');
+          setIpAllowed(false);
+          return;
+        }
         const data = await res.json();
         setClientIp(data.clientIp || '');
         setIpAllowed(res.ok && data.allowed === true);
+        if (!res.ok) {
+          setAccessError(data.error || '');
+        }
       } catch (e) {
+        setAccessError('Unable to reach backend API.');
         setIpAllowed(false);
       } finally {
         setAccessChecked(true);
@@ -258,9 +269,9 @@ export default function ManagePage({ currentPath, onNavigate }) {
     const matchedOrder =
       modal?.type === 'direct-add-customer'
         ? orders.find((o) => {
-            const recPhone = String(o?.custWhatsApp || '').replace(/\D/g, '');
-            return recPhone && (recPhone.includes(digits) || digits.includes(recPhone));
-          })
+          const recPhone = String(o?.custWhatsApp || '').replace(/\D/g, '');
+          return recPhone && (recPhone.includes(digits) || digits.includes(recPhone));
+        })
         : null;
 
     if (matchedOrder) {
@@ -768,7 +779,7 @@ export default function ManagePage({ currentPath, onNavigate }) {
             Access Restricted
           </h1>
           <p className="text-sm text-slate-600 leading-relaxed mb-4">
-            The management panel can only be opened from authorized IP addresses configured in the server environment.
+            {accessError || 'The management panel can only be opened from authorized IP addresses configured in the server environment.'}
           </p>
           {clientIp && (
             <div className="text-xs text-slate-500 border border-slate-200 bg-slate-50 rounded-lg py-2 px-3 mb-5 font-mono">
@@ -1202,8 +1213,8 @@ export default function ManagePage({ currentPath, onNavigate }) {
                   {searchQuery
                     ? 'No customers match your search.'
                     : pinnedCustomers.length > 0
-                    ? 'All customers are currently pinned above.'
-                    : 'No customers added yet.'}
+                      ? 'All customers are currently pinned above.'
+                      : 'No customers added yet.'}
                 </div>
               ) : (
                 <div className="overflow-x-auto border border-slate-300">
@@ -1484,15 +1495,14 @@ export default function ManagePage({ currentPath, onNavigate }) {
             onClick={closeModal}
           >
             <div
-              className={`relative bg-white border border-slate-200 rounded-2xl w-full p-6 shadow-xl max-h-[90vh] overflow-y-auto ${
-                modal.type === 'direct-add-customer' ||
+              className={`relative bg-white border border-slate-200 rounded-2xl w-full p-6 shadow-xl max-h-[90vh] overflow-y-auto ${modal.type === 'direct-add-customer' ||
                 modal.type === 'direct-add-order' ||
                 modal.type === 'edit-customer' ||
                 modal.type === 'edit-order' ||
                 modal.type === 'edit-garbage'
-                  ? 'max-w-lg'
-                  : 'max-w-sm'
-              }`}
+                ? 'max-w-lg'
+                : 'max-w-sm'
+                }`}
               onClick={(e) => e.stopPropagation()}
             >
               <button
@@ -1528,267 +1538,265 @@ export default function ManagePage({ currentPath, onNavigate }) {
                   modal.type === 'edit-customer' ||
                   modal.type === 'edit-order' ||
                   modal.type === 'edit-garbage') && (
-                <div className="space-y-3 mt-3">
-                  {/* Two Options: Insert with Phone (from Garbage) OR Manual Details */}
-                  {modal.type !== 'edit-customer' && modal.type !== 'edit-order' && modal.type !== 'edit-garbage' && (
-                  <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1 rounded-xl">
-                    <button
-                      type="button"
-                      onClick={() => setDirectMode('phone')}
-                      className={`py-2 px-3 rounded-lg text-xs font-bold transition-colors ${
-                        directMode === 'phone' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      Insert with Phone
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDirectMode('manual')}
-                      className={`py-2 px-3 rounded-lg text-xs font-bold transition-colors ${
-                        directMode === 'manual' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      Manual Details
-                    </button>
-                  </div>
-                  )}
-
-                  {modal.type !== 'edit-customer' &&
-                    modal.type !== 'edit-order' &&
-                    modal.type !== 'edit-garbage' &&
-                    directMode === 'phone' && (
-                    <div className="p-3 rounded-xl border border-slate-200 bg-slate-50 space-y-2">
-                      <label className="block text-[11px] font-bold text-slate-700 uppercase">
-                        Phone Number (Fetch from Garbage)
-                      </label>
-                      <div className="flex gap-2">
-                        <input
-                          type="tel"
-                          value={lookupPhone}
-                          onChange={(e) => setLookupPhone(e.target.value)}
-                          placeholder="Enter 10-digit phone"
-                          className="flex-1 px-3 py-2 rounded-lg border border-slate-300 bg-white text-xs outline-none"
-                        />
-                        <button
-                          type="button"
-                          onClick={handleFetchFromGarbage}
-                          className="px-3 py-2 rounded-lg bg-slate-900 text-white text-xs font-bold hover:bg-slate-800"
-                        >
-                          Fetch
-                        </button>
-                      </div>
-                      {lookupStatus && (
-                        <p className="text-[11px] text-slate-700 font-medium">{lookupStatus}</p>
-                      )}
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                    <div>
-                      <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Name *</label>
-                      <input
-                        type="text"
-                        required
-                        value={directForm.custName}
-                        onChange={(e) => setDirectForm({ ...directForm, custName: e.target.value })}
-                        placeholder="Customer Name"
-                        className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs outline-none"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Phone *</label>
-                      <input
-                        type="tel"
-                        required
-                        value={directForm.custWhatsApp}
-                        onChange={(e) => setDirectForm({ ...directForm, custWhatsApp: e.target.value })}
-                        placeholder="10-digit phone"
-                        className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs outline-none"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Email</label>
-                    <input
-                      type="email"
-                      value={directForm.custEmail}
-                      onChange={(e) => setDirectForm({ ...directForm, custEmail: e.target.value })}
-                      placeholder="customer@gmail.com"
-                      className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs outline-none"
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                    <div>
-                      <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Plan *</label>
-                      <select
-                        value={directForm.packageName}
-                        onChange={(e) => setDirectForm({ ...directForm, packageName: e.target.value })}
-                        className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs outline-none bg-white"
-                      >
-                        <option value="Only Lunch - Pure Veg">Only Lunch - Pure Veg</option>
-                        <option value="Only Lunch - Non-Veg">Only Lunch - Non-Veg</option>
-                        <option value="Only Dinner (Pure Veg)">Only Dinner (Pure Veg)</option>
-                        <option value="Only Tiffen (Pure Veg)">Only Tiffen (Pure Veg)</option>
-                        <option value="Weekend Saturday Sunday Combo">Weekend Saturday Sunday Combo</option>
-                        <option value="Daily & Monthly Combo - Pure Veg">Daily &amp; Monthly Combo - Pure Veg</option>
-                        <option value="Daily & Monthly Combo - Non-Veg">Daily &amp; Monthly Combo - Non-Veg</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Area</label>
-                      <input
-                        type="text"
-                        value={directForm.deliveryArea}
-                        onChange={(e) => setDirectForm({ ...directForm, deliveryArea: e.target.value })}
-                        placeholder="Guduvancherry"
-                        className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs outline-none"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                    <div>
-                      <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Start Date *</label>
-                      <input
-                        type="date"
-                        required
-                        value={directForm.startDate}
-                        onChange={(e) => setDirectForm({ ...directForm, startDate: e.target.value })}
-                        className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs outline-none"
-                      />
-                    </div>
-                    {(modal.type === 'direct-add-customer' || modal.type === 'edit-customer' || modal.type === 'edit-garbage') && (
-                      <div>
-                        <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
-                          End Date {modal.type === 'direct-add-customer' ? '*' : ''}
-                        </label>
-                        <input
-                          type="date"
-                          required={modal.type === 'direct-add-customer'}
-                          min={modal.type === 'edit-customer' || modal.type === 'edit-garbage' ? undefined : (directForm.startDate || todayStr)}
-                          value={directForm.endDate}
-                          onChange={(e) => setDirectForm({ ...directForm, endDate: e.target.value })}
-                          className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs outline-none"
-                        />
-                      </div>
-                    )}
-                  </div>
-
-                  {(modal.type === 'edit-customer' || modal.type === 'edit-order' || modal.type === 'edit-garbage') && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                      <div>
-                        <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Time Slot</label>
-                        <input
-                          type="text"
-                          value={directForm.deliveryTimeSlot}
-                          onChange={(e) => setDirectForm({ ...directForm, deliveryTimeSlot: e.target.value })}
-                          placeholder="Time Slot"
-                          className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs outline-none"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Notes</label>
-                        <input
-                          type="text"
-                          value={directForm.specialNotes}
-                          onChange={(e) => setDirectForm({ ...directForm, specialNotes: e.target.value })}
-                          placeholder="Special notes"
-                          className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs outline-none"
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  <div>
-                    <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Address</label>
-                    <input
-                      type="text"
-                      value={directForm.fullAddress}
-                      onChange={(e) => setDirectForm({ ...directForm, fullAddress: e.target.value })}
-                      placeholder="Full delivery address"
-                      className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs outline-none"
-                    />
-                    {(() => {
-                      const excludeId =
-                        modal.item?.customerId || modal.item?.orderId || modal.item?.garbageId || null;
-                      const addrMatch = findMatchingAddressRecord(directForm.fullAddress, excludeId);
-                      if (!addrMatch) return null;
-                      return (
-                        <p className="mt-1.5 text-[11px] font-semibold text-amber-800 bg-amber-50 border border-amber-300 rounded-lg px-2.5 py-1.5">
-                          Warning: This address may exist already ({addrMatch.custName} - {addrMatch.custWhatsApp} in {addrMatch._source}).
-                        </p>
-                      );
-                    })()}
-                  </div>
-
-                  {modal.type === 'direct-add-customer' && (
-                    <div className="space-y-2 pt-1">
-                      <button
-                        type="button"
-                        onClick={() => setShowCustomItemForm((prev) => !prev)}
-                        className="px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-800 text-xs font-bold transition-colors"
-                      >
-                        {showCustomItemForm ? 'Hide Custom Item' : '+ Custom'}
-                      </button>
-
-                      {showCustomItemForm && (
-                        <div className="p-3 rounded-xl border border-slate-200 bg-slate-50 space-y-2.5">
-                          <div className="text-[11px] font-bold text-slate-700 uppercase">Add Custom Bill Item</div>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                            <input
-                              type="text"
-                              value={customItemName}
-                              onChange={(e) => setCustomItemName(e.target.value)}
-                              placeholder="Item Name (e.g. Delivery)"
-                              className="w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-xs outline-none"
-                            />
-                            <input
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              value={customItemAmount}
-                              onChange={(e) => setCustomItemAmount(e.target.value)}
-                              placeholder="Amount (Rs.)"
-                              className="w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-xs outline-none"
-                            />
-                          </div>
+                    <div className="space-y-3 mt-3">
+                      {/* Two Options: Insert with Phone (from Garbage) OR Manual Details */}
+                      {modal.type !== 'edit-customer' && modal.type !== 'edit-order' && modal.type !== 'edit-garbage' && (
+                        <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1 rounded-xl">
                           <button
                             type="button"
-                            onClick={handleAddCustomItem}
-                            className="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs font-bold hover:bg-slate-800"
+                            onClick={() => setDirectMode('phone')}
+                            className={`py-2 px-3 rounded-lg text-xs font-bold transition-colors ${directMode === 'phone' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
+                              }`}
                           >
-                            Add Item
+                            Insert with Phone
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setDirectMode('manual')}
+                            className={`py-2 px-3 rounded-lg text-xs font-bold transition-colors ${directMode === 'manual' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
+                              }`}
+                          >
+                            Manual Details
+                          </button>
+                        </div>
+                      )}
+
+                      {modal.type !== 'edit-customer' &&
+                        modal.type !== 'edit-order' &&
+                        modal.type !== 'edit-garbage' &&
+                        directMode === 'phone' && (
+                          <div className="p-3 rounded-xl border border-slate-200 bg-slate-50 space-y-2">
+                            <label className="block text-[11px] font-bold text-slate-700 uppercase">
+                              Phone Number (Fetch from Garbage)
+                            </label>
+                            <div className="flex gap-2">
+                              <input
+                                type="tel"
+                                value={lookupPhone}
+                                onChange={(e) => setLookupPhone(e.target.value)}
+                                placeholder="Enter 10-digit phone"
+                                className="flex-1 px-3 py-2 rounded-lg border border-slate-300 bg-white text-xs outline-none"
+                              />
+                              <button
+                                type="button"
+                                onClick={handleFetchFromGarbage}
+                                className="px-3 py-2 rounded-lg bg-slate-900 text-white text-xs font-bold hover:bg-slate-800"
+                              >
+                                Fetch
+                              </button>
+                            </div>
+                            {lookupStatus && (
+                              <p className="text-[11px] text-slate-700 font-medium">{lookupStatus}</p>
+                            )}
+                          </div>
+                        )}
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <div>
+                          <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Name *</label>
+                          <input
+                            type="text"
+                            required
+                            value={directForm.custName}
+                            onChange={(e) => setDirectForm({ ...directForm, custName: e.target.value })}
+                            placeholder="Customer Name"
+                            className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Phone *</label>
+                          <input
+                            type="tel"
+                            required
+                            value={directForm.custWhatsApp}
+                            onChange={(e) => setDirectForm({ ...directForm, custWhatsApp: e.target.value })}
+                            placeholder="10-digit phone"
+                            className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs outline-none"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Email</label>
+                        <input
+                          type="email"
+                          value={directForm.custEmail}
+                          onChange={(e) => setDirectForm({ ...directForm, custEmail: e.target.value })}
+                          placeholder="customer@gmail.com"
+                          className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs outline-none"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <div>
+                          <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Plan *</label>
+                          <select
+                            value={directForm.packageName}
+                            onChange={(e) => setDirectForm({ ...directForm, packageName: e.target.value })}
+                            className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs outline-none bg-white"
+                          >
+                            <option value="Only Lunch - Pure Veg">Only Lunch - Pure Veg</option>
+                            <option value="Only Lunch - Non-Veg">Only Lunch - Non-Veg</option>
+                            <option value="Only Dinner (Pure Veg)">Only Dinner (Pure Veg)</option>
+                            <option value="Only Tiffen (Pure Veg)">Only Tiffen (Pure Veg)</option>
+                            <option value="Weekend Saturday Sunday Combo">Weekend Saturday Sunday Combo</option>
+                            <option value="Daily & Monthly Combo - Pure Veg">Daily &amp; Monthly Combo - Pure Veg</option>
+                            <option value="Daily & Monthly Combo - Non-Veg">Daily &amp; Monthly Combo - Non-Veg</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Area</label>
+                          <input
+                            type="text"
+                            value={directForm.deliveryArea}
+                            onChange={(e) => setDirectForm({ ...directForm, deliveryArea: e.target.value })}
+                            placeholder="Guduvancherry"
+                            className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs outline-none"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <div>
+                          <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Start Date *</label>
+                          <input
+                            type="date"
+                            required
+                            value={directForm.startDate}
+                            onChange={(e) => setDirectForm({ ...directForm, startDate: e.target.value })}
+                            className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs outline-none"
+                          />
+                        </div>
+                        {(modal.type === 'direct-add-customer' || modal.type === 'edit-customer' || modal.type === 'edit-garbage') && (
+                          <div>
+                            <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                              End Date {modal.type === 'direct-add-customer' ? '*' : ''}
+                            </label>
+                            <input
+                              type="date"
+                              required={modal.type === 'direct-add-customer'}
+                              min={modal.type === 'edit-customer' || modal.type === 'edit-garbage' ? undefined : (directForm.startDate || todayStr)}
+                              value={directForm.endDate}
+                              onChange={(e) => setDirectForm({ ...directForm, endDate: e.target.value })}
+                              className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs outline-none"
+                            />
+                          </div>
+                        )}
+                      </div>
+
+                      {(modal.type === 'edit-customer' || modal.type === 'edit-order' || modal.type === 'edit-garbage') && (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                          <div>
+                            <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Time Slot</label>
+                            <input
+                              type="text"
+                              value={directForm.deliveryTimeSlot}
+                              onChange={(e) => setDirectForm({ ...directForm, deliveryTimeSlot: e.target.value })}
+                              placeholder="Time Slot"
+                              className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs outline-none"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Notes</label>
+                            <input
+                              type="text"
+                              value={directForm.specialNotes}
+                              onChange={(e) => setDirectForm({ ...directForm, specialNotes: e.target.value })}
+                              placeholder="Special notes"
+                              className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs outline-none"
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">Address</label>
+                        <input
+                          type="text"
+                          value={directForm.fullAddress}
+                          onChange={(e) => setDirectForm({ ...directForm, fullAddress: e.target.value })}
+                          placeholder="Full delivery address"
+                          className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs outline-none"
+                        />
+                        {(() => {
+                          const excludeId =
+                            modal.item?.customerId || modal.item?.orderId || modal.item?.garbageId || null;
+                          const addrMatch = findMatchingAddressRecord(directForm.fullAddress, excludeId);
+                          if (!addrMatch) return null;
+                          return (
+                            <p className="mt-1.5 text-[11px] font-semibold text-amber-800 bg-amber-50 border border-amber-300 rounded-lg px-2.5 py-1.5">
+                              Warning: This address may exist already ({addrMatch.custName} - {addrMatch.custWhatsApp} in {addrMatch._source}).
+                            </p>
+                          );
+                        })()}
+                      </div>
+
+                      {modal.type === 'direct-add-customer' && (
+                        <div className="space-y-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => setShowCustomItemForm((prev) => !prev)}
+                            className="px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-800 text-xs font-bold transition-colors"
+                          >
+                            {showCustomItemForm ? 'Hide Custom Item' : '+ Custom'}
                           </button>
 
-                          {customItems.length > 0 && (
-                            <div className="space-y-1 pt-1 border-t border-slate-200">
-                              {customItems.map((ci, idx) => (
-                                <div key={idx} className="flex items-center justify-between text-xs text-slate-800 bg-white px-2.5 py-1.5 rounded border border-slate-200">
-                                  <span className="font-semibold">{ci.name}</span>
-                                  <div className="flex items-center gap-2">
-                                    <span className="font-bold">₹{ci.amount.toFixed(2)}</span>
-                                    <button
-                                      type="button"
-                                      onClick={() => setCustomItems((prev) => prev.filter((_, i) => i !== idx))}
-                                      className="text-red-600 font-bold hover:text-red-800"
-                                    >
-                                      &times;
-                                    </button>
-                                  </div>
+                          {showCustomItemForm && (
+                            <div className="p-3 rounded-xl border border-slate-200 bg-slate-50 space-y-2.5">
+                              <div className="text-[11px] font-bold text-slate-700 uppercase">Add Custom Bill Item</div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                <input
+                                  type="text"
+                                  value={customItemName}
+                                  onChange={(e) => setCustomItemName(e.target.value)}
+                                  placeholder="Item Name (e.g. Delivery)"
+                                  className="w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-xs outline-none"
+                                />
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  value={customItemAmount}
+                                  onChange={(e) => setCustomItemAmount(e.target.value)}
+                                  placeholder="Amount (Rs.)"
+                                  className="w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-xs outline-none"
+                                />
+                              </div>
+                              <button
+                                type="button"
+                                onClick={handleAddCustomItem}
+                                className="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs font-bold hover:bg-slate-800"
+                              >
+                                Add Item
+                              </button>
+
+                              {customItems.length > 0 && (
+                                <div className="space-y-1 pt-1 border-t border-slate-200">
+                                  {customItems.map((ci, idx) => (
+                                    <div key={idx} className="flex items-center justify-between text-xs text-slate-800 bg-white px-2.5 py-1.5 rounded border border-slate-200">
+                                      <span className="font-semibold">{ci.name}</span>
+                                      <div className="flex items-center gap-2">
+                                        <span className="font-bold">₹{ci.amount.toFixed(2)}</span>
+                                        <button
+                                          type="button"
+                                          onClick={() => setCustomItems((prev) => prev.filter((_, i) => i !== idx))}
+                                          className="text-red-600 font-bold hover:text-red-800"
+                                        >
+                                          &times;
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ))}
                                 </div>
-                              ))}
+                              )}
                             </div>
                           )}
                         </div>
                       )}
                     </div>
                   )}
-                </div>
-              )}
 
-              {modal.type === 'add-customer' && (
+                {modal.type === 'add-customer' && (
                   <div className="space-y-3">
                     <div>
                       <label className="block text-xs font-bold text-slate-700 uppercase mb-1.5">
